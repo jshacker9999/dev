@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Unified Particle System</title>
+    <meta charset="utf-8">
+    <link rel="icon" href="favicon.ico">
+    <link rel="stylesheet" href="css/style.css" type="text/css">
+</head>
+
+<body>
+    <canvas id="canvas" width="800px" height="600px"></canvas>
+    <div id="msgbox"></div>
+    <div id="debugmodewarning">
+        <strong style="font-size: 150%">DEBUG MODE!</strong>
+        (Disable before measuring performance.)
+        <div id="dlbutton">
+            <button type="button" action="" disabled onclick="downloadCanvas();">Screenshot</button>
+        </div>
+    </div>
+    <div id="alertcontainer">
+        <div id="alertbox">
+            <pre id="alerttext"></pre>
+        </div>
+    </div>
+</body>
+<script src="lib/jquery-2.1.4.min.js"></script>
+<script src="lib/es6-promise.min.js"></script>
+
+<script src="lib/three.js"></script>
+<script src="lib/OrbitControls.js"></script>
+<script src="lib/OBJLoader.js"></script>
+<script src="lib/webgl-debug.js"></script>
+<script src="lib/seedrandom.min.js"></script>
+
+<script src="lib/stats.min.js"></script>
+<script src="lib/dat.gui.js"></script>
+
+<script src="js/util.js"></script>
+<script src="js/main.js"></script>
+<script src="js/particleSetup.js"></script>
+<script src="js/particleRender.js"></script>
+<script src="js/framework.js"></script>
+<script src="js/ui.js"></script>
+
+<script src="lib/gl-matrix-min.js"></script>
+<script src="lib/minimal-gltf-loader.js"></script>
+
+</html>

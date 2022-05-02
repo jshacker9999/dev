@@ -1,0 +1,34 @@
+import { Color, CubeTexture, Mesh, PerspectiveCamera, Scene } from "three";
+export default class Skybox {
+    private _map;
+    private _material;
+    private _scene;
+    get scene(): Scene;
+    get meshCopy(): Mesh;
+    get texture(): CubeTexture;
+    private _brightness;
+    get brightness(): number;
+    set brightness(value: number);
+    private _gradientUpper;
+    get gradientUpper(): Color;
+    set gradientUpper(value: Color);
+    private _gradientLower;
+    get gradientLower(): Color;
+    set gradientLower(value: Color);
+    private _flickerThickness;
+    get flickerThickness(): number;
+    set flickerThickness(value: number);
+    private _flickerIntensity;
+    get flickerIntensity(): number;
+    set flickerIntensity(value: number);
+    private _flickerFeather;
+    get flickerFeather(): number;
+    set flickerFeather(value: number);
+    constructor(camera: PerspectiveCamera, renderTargetSize?: number);
+    updateSkybox(time?: number): void;
+    setGradient(upper: Color, lower: Color): void;
+    setFlickerBrightness(brightness: number): void;
+    setFlickerThickness(thickness: number): void;
+    setFlickerIntensity(intensity: number): void;
+    setFlickerFeather(feather: number): void;
+}

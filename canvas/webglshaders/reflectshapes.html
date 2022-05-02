@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <meta http-equiv="X-UA-Compatible" content="ie=edge">
+   <title>Infinite shape field</title>
+   <link rel="stylesheet" href="css/reset.css">
+   <link rel="stylesheet" href="css/page.css">
+   <link href='http://fonts.googleapis.com/css?family=Open+Sans:400,300,600' rel='stylesheet' type='text/css'>
+</head>
+
+<body onload="init()">
+   <canvas id="canvas" width="768" height="512"></canvas>
+   <a href="#" id="fullscreen">Toggle Full Screen</a>
+
+</body>
+<script src="js/dat.gui.min.js"></script>
+<script src="js/stats.min.js"></script>
+<script id="vertex" type="x-shader">
+attribute vec2 aVertexPosition;
+
+void main()
+{
+gl_Position = vec4(aVertexPosition, 0.0, 1.0);
+}
+</script>
+<script id="fragment" type="x-shader">
+#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform float time;
+uniform vec2 resolution;
+uniform vec3 cameraPos;
+uniform vec3 cameraLookat;
+uniform vec3 lightDir;
+uniform vec3 lightColour;
+uniform float specular;
+uniform float specularHardness;
+uniform vec3 diffuse;
+uniform float ambientFactor;
+uniform bool ao;
+uniform bool shadows;
+uniform bool rotateWorld;
+uniform bool antialias;
+uniform float param;
+
+#define AO_SAMPLES 4
+#define RAY_DEPTH 512
+#define MAX_DEPTH 512.0
+#define DISTANCE_MIN 0.002
+#define PI 3.14159265
+
+#define ANTIALIAS_SAMPLES 1
+#define REFLECT 1
+
+#define FLOOR_YPOS 0.0
+
+const vec2 delta = vec2(DISTANCE_MIN, 0.);
+
+
+#define HASHSCALE1 .1031
+float Hash(float p)
+{
+vec3 p3  = fract(vec3(p) * HASHSCALE1);
+p3 += dot(p3, p3.yzx + 19.19);
+return fract((p3.x + p3.y) * p3.z);
+}
+
+// unsmoothed psuedo random number noise - fine for this purpose (a single random per domain cell)
+float vnoise(in vec2 x)
+{
+vec2 p = floor(x);
+float n = p.x + p.y*57.0;
+float res = Hash(n);
+return res;
+}
+
+vec3 RotateY(vec3 p, float a)
+{
+float c,s;
+vec3 q=p;
+c = cos(a);
+s = sin(a);
+p.x = c * q.x + s * q.z;
+p.z = -s * q.x + c * q.z;
+return p;
+}
+
+float fOpUnion(float a, float b, float r) {
+vec2 u = max(vec2(r - a,r - b), vec2(0));
+return max(r, min (a, b)) - length(u);
+}
+
+float Plane(vec3 p, vec3 n)
+{
+return dot(p, n);
+}
+
+float sdBox( vec3 p, vec3 b )
+{
+vec3 d = abs(p) - b;
+return min(max(d.x,max(d.y,d.z)),0.0) + length(max(d,0.0));
+}
+
+float udRoundBox( vec3 p, vec3 b, float r )
+{
+return length(max(abs(p)-b,0.0))-r;
+}
+
+float sdTorus( vec3 p, vec2 t )
+{
+vec2 q = vec2(length(p.xz)-t.x,p.y);
+return length(q)-t.y;
+}
+
+float length8(vec2 p)
+{
+p = p*p; p = p*p; p = p*p;
+return pow(p.x + p.y, 1.0/8.0);
+}
+float sdTorus88( vec3 p, vec2 t )
+{
+vec2 q = vec2(length8(p.xz)-t.x,p.y);
+return length8(q)-t.y;
+}
+
+const float DOMAIN = 5.0;
+float Map(vec3 p)
+{
+vec3 q = vec3(mod(p.x, DOMAIN) - 0.5 * DOMAIN, p.y, mod(p.z, DOMAIN) - 0.5 * DOMAIN);
+
+float f = vnoise( vec2( floor(p.x/DOMAIN)*DOMAIN, floor(p.z/DOMAIN)*DOMAIN ) );
+float d;
+if (f > 0.75) {
+d = udRoundBox(vec3(q.x-(0.25*f), q.y-max(f, 0.1)+sin(time*f)*0.75+0.25, q.z+(f-0.75)), vec3(1.0-(f*0.5), max(f, 0.1), f), 0.025);
+}
+else if (f > 0.5) {
+d = length(q-vec3(-0.15+f*0.25,0.75+sin(time+100.0*f), 0.0)) - (0.4+f);
+}
+else if (f > 0.25) {
+d = sdTorus(vec3(q.x, q.y-sin(time*f*2.0)-0.75, q.z), vec2(f+0.33,f+0.05));
+}
+else {
+d = sdTorus88(RotateY(vec3(q.x, q.y-sin(time*f*3.0)-1.0, q.z), cos(time*f*2.0)), vec2(f+0.4,f+0.05));
+}
+return d;
+}
+
+// This should return continuous positive values when outside and negative values inside,
+// which roughly indicate the distance of the nearest surface.
+float Dist(vec3 pos)
+{
+if (rotateWorld) pos = RotateY(pos, sin(time*0.15)*PI);
+
+return fOpUnion(
+Plane(pos-vec3(0.,FLOOR_YPOS,0.), vec3(0.,1.,0.)),
+Map(pos),
+0.5
+);
+}
+
+// NOTE! Try hemispherical AO on less complex scene? for scenes with boxes esp! http://www.aduprat.com/portfolio/?page=articles/hemisphericalSDFAO
+// Based on original by IQ
+float CalcAO(vec3 p, vec3 n)
+{
+float r = 0.0;
+float w = 1.0;
+for (int i=1; i<=AO_SAMPLES; i++)
+{
+float d0 = float(i) * ambientFactor;   // NOTE: factor controls the 'spread' of the AO test and therefore overlap into domain cells
+r += w * (d0 - abs(Dist(p + n * d0)));
+normalize(n + vec3(0.0,0.5,0.0));      // NOTE: see http://www2.compute.dtu.dk/pubdb/views/edoc_download.php/6392/pdf/imm6392.pdf p42
+w *= 0.5;
+}
+return 1.0 - r;
+}
+
+float SoftShadow(vec3 ro, vec3 rd)
+{
+float k = 20.0;            // softness
+float res = 1.0;
+float t = 0.01;            // min-t see http://www.iquilezles.org/www/articles/rmshadows/rmshadows.htm
+for (int i=0; i<48; i++)
+{
+float h = Dist(ro + rd * t);
+res = min(res, k*h/t);
+t += h;
+if (res < DISTANCE_MIN || t > 64.0) break; // max-t
+}
+return clamp(res, 0.0, 1.0);
+}
+
+vec3 GetNormal(vec3 pos, float s)
+{
+if (pos.y < FLOOR_YPOS + DISTANCE_MIN)
+{
+return vec3(0.0,1.0,0.0);
+}
+else
+{
+vec3 n;
+n.x = s - Dist(pos - delta.xyy);
+n.y = s - Dist(pos - delta.yxy);
+n.z = s - Dist(pos - delta.yyx);
+return normalize(n);
+}
+}
+
+vec3 Sky(vec3 rd)
+{
+vec3 sky = mix( vec3(.7,.7,.8), vec3(0), exp2(-(1.0/max(rd.y,.01))*vec3(.4,.6,1.0)) );
+float sunAmount = max(dot(rd, lightDir), 0.0);
+sky += vec3(1.0,0.6,0.3) * sunAmount * sunAmount * .5 + vec3(1.0,0.6,0.3) * min(pow(sunAmount, 800.0), .3);
+
+return sky;
+}
+
+// Fog routine - original by IQ
+vec3 Fog(vec3 rgb, vec3 rd, float distance)   // camera to point distance
+{
+const float start = 20.0;  // start offset
+const float b = 0.2;       // fog amount
+float fogAmount = clamp(1.0 - exp((-distance+start)*b*b), 0.0, 1.0);
+vec3 fogColor = Sky(rd);
+return mix(rgb, fogColor, fogAmount);
+}
+
+const float FloorDiffuse = 0.25;
+vec4 Shading(vec3 pos, vec3 rd, vec3 norm, float d)
+{
+vec3 light;
+float ref;
+
+if (d != 0.0)
+{
+float fresnel = pow(1.0 - dot(normalize(-rd), norm), 5.0);
+
+light = lightColour * max(0.0, dot(norm, lightDir));
+vec3 heading = normalize(-rd + lightDir);
+float spec = pow(max(0.0, dot(heading, norm)), specularHardness);
+light = (diffuse * light * (1.0-fresnel)) + (spec * specular);
+
+// object reflection
+fresnel = mix(0.5, 1.0, fresnel);
+ref = fresnel;
+
+if (shadows) light *= SoftShadow(pos, lightDir);
+
+float occ = 1.0;
+if (ao) occ = CalcAO(pos, norm);
+if (ao) light *= occ; // rather than "adding in ambient", instead add sky and reflect light sources
+
+// sky light with AO
+float sky = clamp(0.5 + 0.5 * norm.y, 0.0, 1.0);
+light += sky * vec3(0.24, 0.20, 0.24) * 0.5 * occ * occ;
+
+// indirect light bounce with AO
+float ind = clamp(dot(norm, normalize(lightDir * vec3(-1.0,0.0,-1.0))), 0.0, 1.0);
+light += ind * lightColour * 0.25 * occ * occ;
+}
+else
+{
+// Sky hit - distance test went to infinity
+light = Sky(rd);
+}
+
+return vec4(light, ref);
+}
+
+// Original method by David Hoskins
+#define GAMMA 0.9
+#define CONTRAST 1.1
+#define SATURATION 1.2
+#define BRIGHTNESS 1.2
+vec3 PostEffects(vec3 rgb, vec2 xy)
+{
+rgb = pow(rgb, vec3(GAMMA));
+rgb = mix(vec3(.5), mix(vec3(dot(vec3(.2125, .7154, .0721), rgb*BRIGHTNESS)), rgb*BRIGHTNESS, SATURATION), CONTRAST);
+rgb *= .4+0.5*pow(40.0*xy.x*xy.y*(1.0-xy.x)*(1.0-xy.y), 0.2 );	
+return rgb;
+}
+
+// Camera function by TekF
+// Compute ray from camera parameters
+vec3 GetRay(vec3 dir, vec2 pos)
+{
+pos = pos - 0.5;
+pos.x *= resolution.x/resolution.y;
+
+dir = normalize(dir);
+vec3 right = normalize(cross(vec3(0.,1.,0.),dir));
+vec3 up = normalize(cross(dir,right));
+
+return dir + right*pos.x + up*pos.y;
+}
+
+// March - note the inout!
+float March(vec3 ro, vec3 rd, inout vec3 p)
+{
+float t = 0.0;
+float d = 0.0;
+for (int i=0; i<RAY_DEPTH; i++)
+{
+p = ro + rd * t;
+float d = Dist(p);
+if (abs(d) < DISTANCE_MIN)
+{
+   return d;
+}
+t += d * 0.75;
+if (t >= MAX_DEPTH) break;
+}
+return 0.0;
+}
+
+float MarchReflect(vec3 ro, vec3 rd, inout vec3 p)
+{
+float t = 0.0;
+float d = 0.0;
+for (int i=0; i<RAY_DEPTH/2; i++)
+{
+p = ro + rd * t;
+float d = Dist(p);
+if (abs(d) < DISTANCE_MIN)
+{
+   return d;
+}
+t += d * 0.75;
+if (t >= MAX_DEPTH) break;
+}
+return 0.0;
+}
+
+void main()
+{
+vec3 cpos = cameraPos;
+vec3 lookAt = cameraLookat;
+if (rotateWorld) {
+//cpos.y = sin(time)*0.5 + 5.0;
+cpos.y = sin(time*0.5)*2.0 + 6.0;
+cpos.x = cos(time*.25)*8.0 + 4.0;
+lookAt.y = -sin(time*0.75)*4.0 - 2.0;
+}
+
+vec4 res = vec4(0.0);
+vec2 p;
+float d_ang = 2.*PI / float(ANTIALIAS_SAMPLES);
+float ang = d_ang * 0.333;
+float r = 0.333;
+for (int i = 0; i < ANTIALIAS_SAMPLES; i++)
+{
+p = vec2((gl_FragCoord.x + cos(ang)*r) / resolution.x, (gl_FragCoord.y + sin(ang)*r) / resolution.y);
+vec3 ro = cpos;
+vec3 rd = normalize(GetRay(lookAt-cpos, p));
+vec3 hit;
+
+float d = March(ro, rd, hit);
+float fogDistance = length(ro - hit);
+vec3 fogRd = rd;
+vec3 norm = GetNormal(hit,d);
+vec4 shade = Shading(hit, rd, norm, d);
+#if REFLECT
+shade.rgb *= 1.0 - shade.a;
+if (shade.a != 0.0)     // reflection sample needed
+{
+   // ray reflection - shift out again so not immediately hit same point
+   rd = reflect(rd, norm);
+   ro = hit + rd;
+   d = MarchReflect(ro, rd, hit);
+
+   norm = GetNormal(hit, d);
+   vec4 shade1 = Shading(hit, rd, norm, d);
+   if (shade1.a != 0.0)
+   {
+      // add in colour from another reflection march step
+      shade.rgb += shade1.rgb * shade.a * 0.5;
+
+      // ray reflection - shift out again so not immediately hit same point
+      rd = reflect(rd, norm);
+      ro = hit + rd;
+      d = MarchReflect(ro, rd, hit);
+
+      // add in colour from another reflection march step
+      norm = GetNormal(hit, d);
+      vec4 shade2 = Shading(hit, rd, norm, d);
+      shade.rgb += shade2.rgb * shade.a * 0.5;
+   }
+   else shade.rgb += shade1.rgb * shade.a;
+}
+#endif
+res.rgb += Fog(shade.rgb, fogRd, fogDistance);
+ang += d_ang;
+}
+res.rgb /= float(ANTIALIAS_SAMPLES);
+
+gl_FragColor = vec4(PostEffects(res.rgb, p), 1.0);
+}
+</script>
+
+<script type="text/javascript">
+   var requestAnimationFrame = window.requestAnimationFrame || window.webkitRequestAnimationFrame ||
+      window.mozRequestAnimationFrame || window.msRequestAnimationFrame ||
+      function (c) { window.setTimeout(c, 15) };
+   var config = {
+      camera: {
+         x: 0.0, y: 5.0, z: -12.0
+      },
+      lookat: {
+         x: 16.0, y: -5.0, z: -1.2
+      },
+      lightDir: {
+         //x: 1.6, y: 2.0, z: -1.5
+         x: 3.8, y: 3.5, z: -1.5
+      },
+      lightColour: {
+         r: 2.5, g: 1.8, b: 1.4
+      },
+      surface: {
+         specular: 1.5,
+         specularHardness: 20.0,
+         diffuse: 0.05,
+         ambientFactor: 0.3
+      },
+      global: {
+         ao: true,
+         shadows: true,
+         rotateWorld: true,
+         param: 4.0
+      }
+   };
+
+   var aspect, gl;
+   function init() {
+      var pause = false;
+      document.addEventListener('keydown', function (e) {
+         switch (e.keyCode) {
+            case 32:
+            case 27: // ESC
+               pause = !pause;
+               break;
+         }
+      }, false);
+
+      // add GUI controls
+      var mobile = (navigator.userAgent.indexOf("Android") !== -1);
+      var gui = new dat.GUI();
+      var panel = gui.addFolder('Camera Position');
+      panel.add(config.camera, "x").min(-160.0).max(160.0).step(0.1);
+      panel.add(config.camera, "y").min(-16.0).max(16.0).step(0.1);
+      panel.add(config.camera, "z").min(-160.0).max(160.0).step(0.1);
+      //panel.open();
+      panel = gui.addFolder('Camera LookAt');
+      panel.add(config.lookat, "x").min(-160.0).max(160.0).step(0.1);
+      panel.add(config.lookat, "y").min(-16.0).max(16.0).step(0.1);
+      panel.add(config.lookat, "z").min(-160.0).max(160.0).step(0.1);
+      //if (!mobile) panel.open();
+      panel = gui.addFolder('Light Direction');
+      panel.add(config.lightDir, "x").min(-16.0).max(16.0).step(0.1);
+      panel.add(config.lightDir, "y").min(-16.0).max(16.0).step(0.1);
+      panel.add(config.lightDir, "z").min(-16.0).max(16.0).step(0.1);
+      if (!mobile) panel.open();
+      panel = gui.addFolder('Light Colour');
+      panel.add(config.lightColour, "r").min(0.0).max(3.0).step(0.1);
+      panel.add(config.lightColour, "g").min(0.0).max(3.0).step(0.1);
+      panel.add(config.lightColour, "b").min(0.0).max(3.0).step(0.1);
+      if (!mobile) panel.open();
+      panel = gui.addFolder('Surface');
+      panel.add(config.surface, "specular").min(0).max(16);
+      panel.add(config.surface, "specularHardness").min(16).max(64).step(1);
+      panel.add(config.surface, "diffuse").min(0).max(1).step(0.05);
+      panel.add(config.surface, "ambientFactor").min(0).max(1).step(0.05).name("occlusion");
+      panel.open();
+      panel = gui.addFolder('Global');
+      panel.add(config.global, "shadows").name("Shadows");
+      panel.add(config.global, "ao").name("Ambient Occlusion");
+      panel.add(config.global, "rotateWorld").name("Rotate World");
+      panel.add(config.global, "param").min(1.0).max(12.0).step(0.5);
+      if (!mobile) panel.open();
+
+      var stats = new Stats();
+      document.body.appendChild(stats.domElement);
+
+      // create webgl context on the canvas element
+      var canvas = document.getElementById("canvas");
+      aspect = canvas.width / canvas.height;
+      try {
+         gl = canvas.getContext("experimental-webgl");
+      }
+      catch (e) {
+         document.write("Whoops! No useful WEB-GL impl available. Shame on you and your browser vendor.<br>" + e.message);
+         return;
+      }
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      // get the vertex and fragment shader source
+      var v = document.getElementById("vertex").firstChild.nodeValue;
+      var f = document.getElementById("fragment").firstChild.nodeValue;
+
+      // compile and link the shaders
+      var vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, v);
+      gl.compileShader(vs);
+
+      var fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, f);
+      gl.compileShader(fs);
+
+      var program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+
+      // debug shader compile status
+      var error = false;
+      if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+         error = true;
+         console.log(gl.getShaderInfoLog(vs));
+      }
+
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+         error = true;
+         console.log(gl.getShaderInfoLog(fs));
+      }
+
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+         error = true;
+         console.log(gl.getProgramInfoLog(program));
+      }
+      if (error) return;
+
+      var firstTime = Date.now();
+      (f = function () {
+         if (!pause) {
+            stats.begin();
+
+            // create vertices to fill the canvas with a single quad 
+            var vertices = new Float32Array(
+               [
+                  -1, 1 * aspect, 1, 1 * aspect, 1, -1 * aspect,
+                  -1, 1 * aspect, 1, -1 * aspect, -1, -1 * aspect
+               ]);
+
+            var vbuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+            var triCount = 2,
+               numItems = vertices.length / triCount;
+
+            gl.useProgram(program);
+
+            var time = (Date.now() - firstTime) / 1000.0;
+            program.time = gl.getUniformLocation(program, "time");
+            gl.uniform1f(program.time, time);
+
+            program.resolution = gl.getUniformLocation(program, "resolution");
+            gl.uniform2f(program.resolution, canvas.width, canvas.height);
+
+            program.cameraPos = gl.getUniformLocation(program, "cameraPos");
+            gl.uniform3f(program.cameraPos, config.camera.x, config.camera.y, config.camera.z);
+
+            program.cameraLookat = gl.getUniformLocation(program, "cameraLookat");
+            gl.uniform3f(program.cameraLookat, config.lookat.x, config.lookat.y, config.lookat.z);
+
+            program.lightDir = gl.getUniformLocation(program, "lightDir");
+            // pre normalise light dir
+            var x = config.lightDir.x, y = config.lightDir.y, z = config.lightDir.z;
+            var len = x * x + y * y + z * z;
+            len = 1.0 / Math.sqrt(len);
+            gl.uniform3f(program.lightDir, config.lightDir.x * len, config.lightDir.y * len, config.lightDir.z * len);
+
+            program.lightColour = gl.getUniformLocation(program, "lightColour");
+            gl.uniform3f(program.lightColour, config.lightColour.r, config.lightColour.g, config.lightColour.b);
+
+            program.specular = gl.getUniformLocation(program, "specular");
+            gl.uniform1f(program.specular, config.surface.specular);
+
+            program.specularHardness = gl.getUniformLocation(program, "specularHardness");
+            gl.uniform1f(program.specularHardness, config.surface.specularHardness);
+
+            program.diffuse = gl.getUniformLocation(program, "diffuse");
+            gl.uniform3f(program.diffuse, config.surface.diffuse, config.surface.diffuse, config.surface.diffuse);
+
+            program.ambientFactor = gl.getUniformLocation(program, "ambientFactor");
+            gl.uniform1f(program.ambientFactor, config.surface.ambientFactor);
+
+            program.rotateWorld = gl.getUniformLocation(program, "rotateWorld");
+            gl.uniform1f(program.rotateWorld, config.global.rotateWorld);
+
+            program.ao = gl.getUniformLocation(program, "ao");
+            gl.uniform1f(program.ao, config.global.ao);
+
+            program.shadows = gl.getUniformLocation(program, "shadows");
+            gl.uniform1f(program.shadows, config.global.shadows);
+
+            program.param = gl.getUniformLocation(program, "param");
+            gl.uniform1f(program.param, config.global.param);
+
+            program.aVertexPosition = gl.getAttribLocation(program, "aVertexPosition");
+            gl.enableVertexAttribArray(program.aVertexPosition);
+            gl.vertexAttribPointer(program.aVertexPosition, triCount, gl.FLOAT, false, 0, 0);
+
+            gl.drawArrays(gl.TRIANGLES, 0, numItems);
+
+            stats.end();
+            //pause = true;
+         }
+         requestAnimationFrame(f);
+      })();
+   }
+</script>
+<script src="js/utils.js"></script>
+
+</html>

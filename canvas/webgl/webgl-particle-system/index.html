@@ -1,0 +1,64 @@
+﻿<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset=utf-8>
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <title>WEBGL - PARTICLE SYSTEM</title>
+    <link href="css/style.css" rel="stylesheet">
+</head>
+
+<body>
+    <div class="btn m" id="idle">TOGGLE MODE</div>
+
+
+</body>
+<script src="../common/lib/three.min.js"></script>
+
+<script type="text/javascript" src="../common/js/DeviceChecker.js"></script>
+
+<script src="shaders/feedback_frag.js"></script>
+<script src="shaders/master_frag.js"></script>
+<script src="shaders/master_vert.js"></script>
+<script src="shaders/vel_frag.js"></script>
+
+<script src="js/shared_renderer.js"></script>
+<script src="js/Ps.js"></script>
+
+<script>
+    var m_device_checker = new DeviceChecker();
+    var is_mobile = m_device_checker.is_mobile();
+    var is_retina = m_device_checker.is_retina();
+
+    if (is_mobile) {
+        document.body.style['font-size'] = "2em";
+    }
+
+    var theme = {
+        default: 0,
+        yellow: 1,
+        blue: 2,
+        green: 3,
+    };
+
+    // setup renderer
+    var m_renderer = new shared_renderer();
+    m_renderer.append_renderer_to_dom(document.body);
+    m_renderer.register_dom_events(document.body.getElementsByTagName("canvas")[0]);
+
+
+    // setup ps
+    var m_ps = new ps_03(m_renderer, is_retina, is_mobile);
+
+    document.getElementById("idle").addEventListener("mouseup", m_ps.trigger_attract_mode.bind(m_ps), false);
+    document.getElementById("idle").addEventListener("touchend", m_ps.trigger_attract_mode.bind(m_ps), false);
+
+    m_ps.set_theme(theme.blue);
+
+    var render_queue = [
+        m_ps.update.bind(m_ps, m_renderer)
+    ];
+    m_renderer.render(render_queue);
+</script>
+
+</html>
