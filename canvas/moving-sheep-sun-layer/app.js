@@ -28,7 +28,6 @@ class App {
     this.stageWidth = document.body.clientWidth;
     this.stageHeight = document.body.clientHeight;
 
-    // 캔버스 사이즈를 2배로 줘서 retina display에서도 선명하게 보이도록 설정
     this.canvas.width = this.stageWidth * 2;
     this.canvas.height = this.stageHeight * 2;
     this.ctx.scale(2, 2);

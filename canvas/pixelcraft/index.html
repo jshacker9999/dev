@@ -1,5 +1,4 @@
 <html>
-
 <head>
   <title>PixelCraft: A Pixel Art Editor</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -411,7 +410,7 @@
       this.canvas.addEventListener("mouseup", e => {
         this.active = false
         if (this.previous_point.x !== undefined) {
-          return; // Don't re-paint the last point in a streak
+          return; 
         }
 
         var rect = this.canvas.getBoundingClientRect();
@@ -664,22 +663,6 @@
       img.addEventListener("load", function () {
         window.board.ctx.drawImage(img, 0, 0);
       });
-      /*
-      window.board.frames = JSON.parse(data.frames).map(frame=>{
-        let img = new Image();
-        img.src = frame[0]
-        return [img, frame[1]]
-      });
-      
-      for(let f in data.frames){
-        let c = document.createElement('canvas');
-        c.width = data.width;
-        c.height = data.height;
-        let c_ctx = c.getContext('2d');
-        c_ctx.drawImage(f[0], 0, 0);
-        window.board.addFrame(c.toDataURL());
-      }
-     */
 
       window.board.steps = data.steps;
       window.board.redo_arr = data.redo_arr;
@@ -712,10 +695,10 @@
     if (window.board == undefined) {
       window.board = new Canvas(width, height);
     }
-    window.board.canvas.width = 10 * width;//display each pixel in 10 by 10pxs
+    window.board.canvas.width = 10 * width;
     window.board.canvas.height = 10 * height;
-    window.board.width = width;//Dimentions of x pixels
-    window.board.height = height;//Dimentions of Y pixels
+    window.board.width = width;
+    window.board.height = height;
     window.board.canvas.style.display = "block";
     window.board.canvas.style.height = Math.floor((height / width) * window.board.canvas.clientWidth) + "px";
     window.board.w = +window.board.canvas.width;
